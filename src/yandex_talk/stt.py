@@ -1,34 +1,48 @@
+from typing import DefaultDict, Optional, Union
+
 import os
-import queue
-import json
-import sounddevice as sd
-import numpy as np
-from vosk import Model, KaldiRecognizer
-from pydub import AudioSegment
-from pydub.silence import split_on_silence
-from webrtcvad import Vad
-import threading
 import time
-import wave
-import tempfile
+import json
+import queue
+import logging
+import threading
+from pathlib import Path
 from collections import defaultdict
 
-from src.yandex_talk.constants import MODEL_PATH
+import numpy as np
+import sounddevice as sd
+from webrtcvad import Vad
+from vosk import Model, KaldiRecognizer
+
+from pydub import AudioSegment
+from pydub.silence import split_on_silence
+import wave
+import tempfile
+
+from src.yandex_talk.constants import DEFAULT_SAMPLE_RATE
 
 
 class SpeechRecognizer:
-    def __init__(self, model_path="vosk-model-small-en-us-0.15", sample_rate=16000):
+    def __init__(
+            self,
+            model_path: Union[Path, str],
+            sample_rate: int = DEFAULT_SAMPLE_RATE
+    ) -> None:
         """
         Инициализация распознавателя речи
 
         :param model_path: путь к модели Vosk
         :param sample_rate: частота дискретизации аудио
         """
-        if not os.path.exists(model_path):
-            print(f"Модель {model_path} не найдена. Пожалуйста, скачайте модель с https://alphacephei.com/vosk/models")
-            exit(1)
+        self.logger = logging.getLogger(self.__class__.__name__)
 
-        self.model = Model(model_path)
+        if not os.path.exists(model_path):
+            raise ValueError(
+                f"Model {model_path} not found. "
+                f"Please, download here https://alphacephei.com/vosk/models"
+            )
+
+        self.model = Model(str(model_path))
         self.sample_rate = sample_rate
         self.recognizer = KaldiRecognizer(self.model, self.sample_rate)
         self.audio_queue = queue.Queue()
@@ -39,7 +53,7 @@ class SpeechRecognizer:
         self.last_speaker_change = time.time()
         self.speaker_silence_threshold = 1.5  # секунды молчания для смены спикера
 
-    def _process_audio_chunk(self, audio_data):
+    def process_audio_chunk(self, audio_data: np.ndarray) -> None:
         """
         Обработка аудио фрагмента и распознавание речи
 
@@ -60,7 +74,13 @@ class SpeechRecognizer:
                 })
                 print(f"Speaker {self.current_speaker}: {result['text']}")
 
-    def _audio_callback(self, indata, frames, time, status):
+    def _audio_callback(
+            self,
+            indata: np.ndarray,
+            frames: int,
+            time: dict[str, float],
+            status: sd.CallbackFlags
+    ) -> None:
         """
         Callback функция для записи аудио с микрофона
         """
@@ -69,7 +89,7 @@ class SpeechRecognizer:
         if self.is_listening:
             self.audio_queue.put(indata.copy())
 
-    def _process_audio_stream(self):
+    def _process_audio_stream(self) -> None:
         """
         Обработка аудио потока в отдельном потоке
         """
@@ -82,11 +102,11 @@ class SpeechRecognizer:
 
                 # Применяем VAD для обнаружения речи
                 if self._has_speech(audio_chunk):
-                    self._process_audio_chunk(audio_chunk)
+                    self.process_audio_chunk(audio_chunk)
             except queue.Empty:
                 continue
 
-    def _has_speech(self, audio_chunk):
+    def _has_speech(self, audio_chunk: np.ndarray) -> bool:
         """Проверка наличия речи с помощью WebRTC VAD"""
         # 1. Конвертируем в 16-bit PCM моно, если это ещё не сделано
         if audio_chunk.dtype != np.int16:
@@ -112,7 +132,7 @@ class SpeechRecognizer:
         audio_bytes = audio_chunk.tobytes()
         return self.vad.is_speech(audio_bytes, self.sample_rate)
 
-    def start_listening(self):
+    def start_listening(self) -> None:
         """
         Начать запись и распознавание речи
         """
@@ -134,20 +154,24 @@ class SpeechRecognizer:
             while self.is_listening:
                 sd.sleep(100)
 
-    def stop_listening(self):
+    def stop_listening(self) -> None:
         """
         Остановить запись и распознавание речи
         """
         self.is_listening = False
         print("Stopped listening.")
 
-    def get_transcript(self):
+    def get_transcript(self) -> dict[int, list[dict]]:
         """
         Получить полную расшифровку с разделением по спикерам
         """
         return dict(self.speaker_segments)
 
-    def save_audio_to_file(self, audio_data, filename):
+    def save_audio_to_file(
+            self,
+            audio_data: np.ndarray,
+            filename: Union[Path, str]
+    ) -> None:
         """
         Сохранить аудио данные в WAV файл
         """
@@ -159,6 +183,7 @@ class SpeechRecognizer:
 
 
 def main():
+    from src.yandex_talk.constants import MODEL_PATH
     # Инициализация распознавателя
     recognizer = SpeechRecognizer(model_path=str(MODEL_PATH))
 
